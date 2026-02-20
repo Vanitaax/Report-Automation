@@ -26,9 +26,27 @@ if os.path.isdir(ADOMD_DIR):
     except Exception:
         pass
 
-from pyadomd import Pyadomd
+try:
+    from pyadomd import Pyadomd
+    _PYADOMD_IMPORT_ERROR: Exception | None = None
+except Exception as exc:
+    Pyadomd = None  # type: ignore[assignment]
+    _PYADOMD_IMPORT_ERROR = exc
 
 _TOKEN_CACHE: dict[str, object] = {"token": None, "expires_at": 0.0}
+
+
+def _require_pyadomd() -> None:
+    if Pyadomd is not None:
+        return
+    detail = ""
+    if _PYADOMD_IMPORT_ERROR is not None:
+        detail = f" Import error: {_PYADOMD_IMPORT_ERROR}"
+    raise RuntimeError(
+        "Power BI query runtime is unavailable in this environment. "
+        "pyadomd/pythonnet requires a local .NET runtime (Mono/.NET), which is not present here."
+        + detail
+    )
 
 
 def _build_base_conn_str() -> str:
@@ -100,6 +118,7 @@ def _get_access_token() -> str | None:
 
 
 def run_dax(dax_query: str) -> pd.DataFrame:
+    _require_pyadomd()
     last_exc: Exception | None = None
     candidates = []
     sp_conn = _build_sp_conn_str()
