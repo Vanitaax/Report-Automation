@@ -34,19 +34,26 @@ except Exception as exc:
     _PYADOMD_IMPORT_ERROR = exc
 
 _TOKEN_CACHE: dict[str, object] = {"token": None, "expires_at": 0.0}
+_RUNTIME_WARNING_EMITTED = False
 
 
-def _require_pyadomd() -> None:
-    if Pyadomd is not None:
-        return
+def _pyadomd_unavailable_message() -> str:
     detail = ""
     if _PYADOMD_IMPORT_ERROR is not None:
         detail = f" Import error: {_PYADOMD_IMPORT_ERROR}"
-    raise RuntimeError(
+    return (
         "Power BI query runtime is unavailable in this environment. "
         "pyadomd/pythonnet requires a local .NET runtime (Mono/.NET), which is not present here."
         + detail
     )
+
+
+def _require_pyadomd(raise_on_error: bool = True) -> bool:
+    if Pyadomd is not None:
+        return True
+    if raise_on_error:
+        raise RuntimeError(_pyadomd_unavailable_message())
+    return False
 
 
 def _build_base_conn_str() -> str:
@@ -118,7 +125,13 @@ def _get_access_token() -> str | None:
 
 
 def run_dax(dax_query: str) -> pd.DataFrame:
-    _require_pyadomd()
+    strict_runtime = os.getenv("PBI_STRICT_RUNTIME", "").strip().lower() in {"1", "true", "yes", "on"}
+    if not _require_pyadomd(raise_on_error=strict_runtime):
+        global _RUNTIME_WARNING_EMITTED
+        if not _RUNTIME_WARNING_EMITTED:
+            print(_pyadomd_unavailable_message(), file=sys.stderr)
+            _RUNTIME_WARNING_EMITTED = True
+        return pd.DataFrame()
     last_exc: Exception | None = None
     candidates = []
     sp_conn = _build_sp_conn_str()
