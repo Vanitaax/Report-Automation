@@ -6,6 +6,7 @@ import json
 import time
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 
 import pandas as pd
 
@@ -35,6 +36,7 @@ except Exception as exc:
 
 _TOKEN_CACHE: dict[str, object] = {"token": None, "expires_at": 0.0}
 _RUNTIME_WARNING_EMITTED = False
+_POWERBI_RESOURCE_CACHE: dict[str, str | None] = {"workspace_id": None, "dataset_id": None}
 
 
 def _pyadomd_unavailable_message() -> str:
@@ -64,10 +66,24 @@ def _build_base_conn_str() -> str:
     )
 
 
+def _get_secret(name: str, default: str = "") -> str:
+    value = os.getenv(name, "").strip()
+    if value:
+        return value
+    try:
+        import streamlit as st
+
+        if name in st.secrets:
+            return str(st.secrets[name]).strip()
+    except Exception:
+        pass
+    return default
+
+
 def _build_sp_conn_str() -> str | None:
-    client_id = os.getenv("PBI_CLIENT_ID", "").strip()
-    client_secret = os.getenv("PBI_CLIENT_SECRET", "").strip()
-    tenant_id = os.getenv("PBI_TENANT_ID", TENANT_ID).strip()
+    client_id = _get_secret("PBI_CLIENT_ID")
+    client_secret = _get_secret("PBI_CLIENT_SECRET")
+    tenant_id = _get_secret("PBI_TENANT_ID", TENANT_ID)
     if not (client_id and client_secret and tenant_id):
         return None
     return (
@@ -78,9 +94,9 @@ def _build_sp_conn_str() -> str | None:
 
 
 def _request_access_token_from_aad() -> str | None:
-    client_id = os.getenv("PBI_CLIENT_ID", "").strip()
-    client_secret = os.getenv("PBI_CLIENT_SECRET", "").strip()
-    tenant_id = os.getenv("PBI_TENANT_ID", TENANT_ID).strip()
+    client_id = _get_secret("PBI_CLIENT_ID")
+    client_secret = _get_secret("PBI_CLIENT_SECRET")
+    tenant_id = _get_secret("PBI_TENANT_ID", TENANT_ID)
     if not (client_id and client_secret and tenant_id):
         return None
 
@@ -115,7 +131,7 @@ def _request_access_token_from_aad() -> str | None:
 
 
 def _get_access_token() -> str | None:
-    env_token = os.getenv("PBI_ACCESS_TOKEN", "").strip()
+    env_token = _get_secret("PBI_ACCESS_TOKEN")
     if env_token:
         return env_token
     try:
@@ -124,20 +140,114 @@ def _get_access_token() -> str | None:
         return None
 
 
+def _pbi_api_request_json(method: str, url: str, token: str, payload: dict | None = None) -> dict:
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+    req = Request(url, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {token}")
+    if payload is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urlopen(req, timeout=45) as resp:
+            raw = resp.read().decode("utf-8")
+            if not raw:
+                return {}
+            return json.loads(raw)
+    except HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8")
+        except Exception:
+            pass
+        raise RuntimeError(f"Power BI API HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Power BI API network error: {exc}") from exc
+
+
+def _resolve_workspace_dataset_ids(token: str) -> tuple[str, str]:
+    workspace_id = _POWERBI_RESOURCE_CACHE.get("workspace_id")
+    dataset_id = _POWERBI_RESOURCE_CACHE.get("dataset_id")
+    if workspace_id and dataset_id:
+        return workspace_id, dataset_id
+
+    groups = _pbi_api_request_json("GET", "https://api.powerbi.com/v1.0/myorg/groups?$top=5000", token)
+    group_values = groups.get("value", []) if isinstance(groups, dict) else []
+    group_match = next(
+        (g for g in group_values if str(g.get("name", "")).strip().lower() == WORKSPACE.strip().lower()),
+        None,
+    )
+    if not group_match:
+        raise RuntimeError(f"Workspace not found or inaccessible: {WORKSPACE}")
+    workspace_id = str(group_match.get("id", "")).strip()
+    if not workspace_id:
+        raise RuntimeError(f"Workspace id missing for: {WORKSPACE}")
+
+    ds_url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets?$top=5000"
+    datasets = _pbi_api_request_json("GET", ds_url, token)
+    dataset_values = datasets.get("value", []) if isinstance(datasets, dict) else []
+    dataset_match = next(
+        (d for d in dataset_values if str(d.get("name", "")).strip().lower() == DATASET.strip().lower()),
+        None,
+    )
+    if not dataset_match:
+        raise RuntimeError(f"Dataset not found or inaccessible in workspace '{WORKSPACE}': {DATASET}")
+    dataset_id = str(dataset_match.get("id", "")).strip()
+    if not dataset_id:
+        raise RuntimeError(f"Dataset id missing for: {DATASET}")
+
+    _POWERBI_RESOURCE_CACHE["workspace_id"] = workspace_id
+    _POWERBI_RESOURCE_CACHE["dataset_id"] = dataset_id
+    return workspace_id, dataset_id
+
+
+def _run_dax_via_rest(dax_query: str, token: str) -> pd.DataFrame:
+    workspace_id, dataset_id = _resolve_workspace_dataset_ids(token)
+    url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}/executeQueries"
+    payload = {
+        "queries": [{"query": dax_query}],
+        "serializerSettings": {"includeNulls": True},
+    }
+    resp = _pbi_api_request_json("POST", url, token, payload=payload)
+    if not isinstance(resp, dict):
+        return pd.DataFrame()
+    if "error" in resp:
+        raise RuntimeError(f"Power BI executeQueries error: {resp['error']}")
+    results = resp.get("results", [])
+    if not results:
+        return pd.DataFrame()
+    first = results[0] if isinstance(results[0], dict) else {}
+    tables = first.get("tables", [])
+    if not tables:
+        return pd.DataFrame()
+    rows = tables[0].get("rows", []) if isinstance(tables[0], dict) else []
+    if not rows:
+        return pd.DataFrame()
+    if isinstance(rows, list) and isinstance(rows[0], dict):
+        return pd.DataFrame(rows)
+    return pd.DataFrame(rows)
+
+
 def run_dax(dax_query: str) -> pd.DataFrame:
     strict_runtime = os.getenv("PBI_STRICT_RUNTIME", "").strip().lower() in {"1", "true", "yes", "on"}
+    token = _get_access_token()
     if not _require_pyadomd(raise_on_error=strict_runtime):
         global _RUNTIME_WARNING_EMITTED
         if not _RUNTIME_WARNING_EMITTED:
             print(_pyadomd_unavailable_message(), file=sys.stderr)
             _RUNTIME_WARNING_EMITTED = True
+        if token:
+            try:
+                return _run_dax_via_rest(dax_query, token)
+            except Exception:
+                if strict_runtime:
+                    raise
         return pd.DataFrame()
     last_exc: Exception | None = None
     candidates = []
     sp_conn = _build_sp_conn_str()
     if sp_conn:
         candidates.append(("service_principal_conn_str", sp_conn, None))
-    token = _get_access_token()
     candidates.append(("access_token", _build_base_conn_str(), token))
     candidates.append(("base", _build_base_conn_str(), None))
 
@@ -162,6 +272,12 @@ def run_dax(dax_query: str) -> pd.DataFrame:
                 conn.close()
             except Exception:
                 pass
+
+    if token:
+        try:
+            return _run_dax_via_rest(dax_query, token)
+        except Exception as exc:
+            last_exc = exc
 
     hint = (
         "Authentication failed. Set one of: "
