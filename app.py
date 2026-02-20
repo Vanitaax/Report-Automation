@@ -1413,13 +1413,20 @@ def load_temperature(refresh_nonce: int) -> pd.DataFrame:
 
     # Last resort: existing client query path.
     df = get_temperature_forecast()
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Date", "Temperature"])
     if "Date" not in df.columns and len(df.columns) > 0:
         df = df.rename(columns={df.columns[0]: "Date"})
     if "Temperature" not in df.columns and len(df.columns) > 1:
         df = df.rename(columns={df.columns[1]: "Temperature"})
+    if "Date" not in df.columns or "Temperature" not in df.columns:
+        return pd.DataFrame(columns=["Date", "Temperature"])
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df["Temperature"] = pd.to_numeric(df["Temperature"], errors="coerce")
-    return df.dropna(subset=["Date", "Temperature"]).sort_values("Date")
+    out = df.dropna(subset=["Date", "Temperature"]).sort_values("Date")
+    if out.empty:
+        return pd.DataFrame(columns=["Date", "Temperature"])
+    return out
 
 
 @st.cache_data(show_spinner="Loading availability matrix...")
