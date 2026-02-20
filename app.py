@@ -50,6 +50,17 @@ UNIT_STATUS_OPTIONS = [
 UNIT_STATUS_STORE_PATH = Path(".data") / "unit_status_manual.csv"
 EXPORT_DIR = Path(r"C:\Users\V01013\OneDrive - Uniper SE\Documents\Report")
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+SNAPSHOT_DIR = Path("data_snapshots")
+
+
+def _load_snapshot_csv(name: str) -> pd.DataFrame:
+    path = SNAPSHOT_DIR / f"{name}.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path)
+    except Exception:
+        return pd.DataFrame()
 
 
 def _read_unit_status_store() -> pd.DataFrame:
@@ -1321,7 +1332,10 @@ if "refresh_nonce" not in st.session_state:
 @st.cache_data(show_spinner="Running DAX query...")
 def load_query(dax_query: str, refresh_nonce: int) -> pd.DataFrame:
     _ = refresh_nonce
-    return run_dax(dax_query)
+    df = run_dax(dax_query)
+    if not df.empty:
+        return df
+    return _load_snapshot_csv("overview_query1")
 
 
 @st.cache_data(show_spinner="Loading forecast data...")
@@ -1329,6 +1343,10 @@ def load_forecasts(refresh_nonce: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     _ = refresh_nonce
     wind_df = get_wind_forecast()
     solar_df = get_solar_forecast()
+    if wind_df.empty:
+        wind_df = _load_snapshot_csv("wind_forecast")
+    if solar_df.empty:
+        solar_df = _load_snapshot_csv("solar_forecast")
     return wind_df, solar_df
 
 
@@ -1344,19 +1362,28 @@ def load_margins(refresh_nonce: int) -> pd.DataFrame:
     )
     ORDER BY 'Margins'[Date]
     """
-    return run_dax(dax)
+    df = run_dax(dax)
+    if not df.empty:
+        return df
+    return _load_snapshot_csv("margins")
 
 
 @st.cache_data(show_spinner="Loading NIV forecast data...")
 def load_niv_forecast(refresh_nonce: int) -> pd.DataFrame:
     _ = refresh_nonce
-    return get_niv_forecast()
+    df = get_niv_forecast()
+    if not df.empty:
+        return df
+    return _load_snapshot_csv("niv_forecast")
 
 
 @st.cache_data(show_spinner="Loading IC flows data...")
 def load_ic_flows(refresh_nonce: int) -> pd.DataFrame:
     _ = refresh_nonce
-    return get_ic_flows()
+    df = get_ic_flows()
+    if not df.empty:
+        return df
+    return _load_snapshot_csv("ic_flows")
 
 
 @st.cache_data(ttl=60 * 10)
@@ -1426,7 +1453,8 @@ def load_temperature(refresh_nonce: int) -> pd.DataFrame:
     df["Temperature"] = pd.to_numeric(df["Temperature"], errors="coerce")
     out = df.dropna(subset=["Date", "Temperature"]).sort_values("Date")
     if out.empty:
-        return pd.DataFrame(columns=["Date", "Temperature"])
+        snap = _load_snapshot_csv("temperature_forecast")
+        return snap if not snap.empty else pd.DataFrame(columns=["Date", "Temperature"])
     return out
 
 
@@ -1434,7 +1462,9 @@ def load_temperature(refresh_nonce: int) -> pd.DataFrame:
 def load_availability_matrix(refresh_nonce: int) -> pd.DataFrame:
     _ = refresh_nonce
     df = get_availability_matrix()
-    return df
+    if not df.empty:
+        return df
+    return _load_snapshot_csv("availability_matrix")
 
 
 @st.cache_data(show_spinner="Loading unit status table...")
@@ -1497,7 +1527,8 @@ def load_unit_status_table(refresh_nonce: int) -> pd.DataFrame:
                 if not out.empty:
                     return out
             return _normalize_unit_status_columns(df)
-    return pd.DataFrame()
+    snap = _load_snapshot_csv("unit_status")
+    return snap if not snap.empty else pd.DataFrame()
 
 
 @st.cache_data(show_spinner="Loading prices data...")
@@ -1515,13 +1546,19 @@ SUMMARIZECOLUMNS(
 )
 ORDER BY [Order]
 """
-    return run_dax(dax)
+    df = run_dax(dax)
+    if not df.empty:
+        return df
+    return _load_snapshot_csv("prices_main")
 
 
 @st.cache_data(show_spinner="Loading price curve...")
 def load_price_curve(refresh_nonce: int) -> pd.DataFrame:
     _ = refresh_nonce
-    return get_price_curve()
+    df = get_price_curve()
+    if not df.empty:
+        return df
+    return _load_snapshot_csv("price_curve")
 
 
 @st.cache_data(show_spinner="Loading CDC/KILLPG data...")
@@ -1674,7 +1711,8 @@ ORDER BY '{table}'[BMU], '{table}'[{dc}]
         out = out.groupby(["BMU", "Settlement Day"], as_index=False)[metric_cols].sum()
         return out.sort_values(["BMU", "Settlement Day"])
 
-    return pd.DataFrame()
+    snap = _load_snapshot_csv("cdc_killpg")
+    return snap if not snap.empty else pd.DataFrame()
 
 
 @st.cache_data(show_spinner="Loading spark/dark prices...")
@@ -1717,7 +1755,8 @@ ORDER BY [Order]
             continue
         if not df.empty:
             return df
-    return pd.DataFrame()
+    snap = _load_snapshot_csv("prices_sparkdark")
+    return snap if not snap.empty else pd.DataFrame()
 
 
 if export_now:
