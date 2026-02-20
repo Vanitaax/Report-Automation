@@ -37,6 +37,7 @@ except Exception as exc:
 _TOKEN_CACHE: dict[str, object] = {"token": None, "expires_at": 0.0}
 _RUNTIME_WARNING_EMITTED = False
 _POWERBI_RESOURCE_CACHE: dict[str, str | None] = {"workspace_id": None, "dataset_id": None}
+_LAST_DAX_ERROR: str = ""
 
 
 def _pyadomd_unavailable_message() -> str:
@@ -140,6 +141,10 @@ def _get_access_token() -> str | None:
         return None
 
 
+def get_last_dax_error() -> str:
+    return _LAST_DAX_ERROR
+
+
 def _pbi_api_request_json(method: str, url: str, token: str, payload: dict | None = None) -> dict:
     data = None
     if payload is not None:
@@ -229,6 +234,8 @@ def _run_dax_via_rest(dax_query: str, token: str) -> pd.DataFrame:
 
 
 def run_dax(dax_query: str) -> pd.DataFrame:
+    global _LAST_DAX_ERROR
+    _LAST_DAX_ERROR = ""
     strict_runtime = os.getenv("PBI_STRICT_RUNTIME", "").strip().lower() in {"1", "true", "yes", "on"}
     token = _get_access_token()
     if not _require_pyadomd(raise_on_error=strict_runtime):
@@ -239,9 +246,15 @@ def run_dax(dax_query: str) -> pd.DataFrame:
         if token:
             try:
                 return _run_dax_via_rest(dax_query, token)
-            except Exception:
+            except Exception as exc:
+                _LAST_DAX_ERROR = str(exc)
                 if strict_runtime:
                     raise
+        else:
+            _LAST_DAX_ERROR = (
+                "No Power BI access token found. Set PBI_CLIENT_ID/PBI_CLIENT_SECRET/PBI_TENANT_ID "
+                "or PBI_ACCESS_TOKEN in Streamlit secrets."
+            )
         return pd.DataFrame()
     last_exc: Exception | None = None
     candidates = []
@@ -284,7 +297,9 @@ def run_dax(dax_query: str) -> pd.DataFrame:
         "PBI_ACCESS_TOKEN, or PBI_CLIENT_ID + PBI_CLIENT_SECRET (+ optional PBI_TENANT_ID)."
     )
     if last_exc is None:
+        _LAST_DAX_ERROR = hint
         raise RuntimeError(hint)
+    _LAST_DAX_ERROR = f"{hint} Last error: {last_exc}"
     raise RuntimeError(f"{hint} Last error: {last_exc}") from last_exc
 
 

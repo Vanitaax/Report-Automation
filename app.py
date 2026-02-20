@@ -8,6 +8,7 @@ import importlib.util
 import re
 from pbi_client import (
     run_dax,
+    get_last_dax_error,
     get_wind_forecast,
     get_solar_forecast,
     get_niv_forecast,
@@ -1788,6 +1789,9 @@ if page == "Overview":
 
     df = load_query(dax, st.session_state["refresh_nonce"])
     wind_df, solar_df = load_forecasts(st.session_state["refresh_nonce"])
+    dax_error_detail = get_last_dax_error()
+    if dax_error_detail:
+        st.error(f"Power BI connection issue: {dax_error_detail}")
 
     st.markdown("<div class='section-title'>Wind & Solar Forecast</div>", unsafe_allow_html=True)
     with st.spinner("Loading forecast data..."):
