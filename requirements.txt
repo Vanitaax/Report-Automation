@@ -1,0 +1,20 @@
+#things to note for this automation
+#building this on streamlit 
+#to build a dashboard for reports
+#would need refresh button 
+#power bi report data would need to be pulled so need to do that/ pull from the source data/ pull from bi 
+#interactive element/ modernize the current reports
+
+
+
+
+streamlit
+pandas
+plotly
+pyadomd
+pythonnet
+clr_loader
+openpyxl
+kaleido
+
+
